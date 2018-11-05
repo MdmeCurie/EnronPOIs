@@ -15,6 +15,7 @@ import pandas as pd
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.feature_selection import SelectKBest, f_regression
 from sklearn.feature_selection import SelectPercentile, f_classif, chi2
+from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.preprocessing import MinMaxScaler, StandardScaler 
 from sklearn.preprocessing import Imputer
 
@@ -64,7 +65,14 @@ features_list = ['poi', 'salary', 'bonus','deferral_payments','total_payments',
 with open("final_project_dataset.pkl", "r") as data_file:
     data_dict = pickle.load(data_file)
 
-print ("Rows with >=18 empty values:")    
+num_entries = len(data_dict)
+print ("There are %s entries in the original data_file"%(num_entries))
+
+
+        
+### Task 2: Remove outliers - remove TOTAL, Lockhardt Eugene E (all NaNs), and The Agency in the Park    
+
+print ("Rows with excessive empty values >=18:")    
 for namen in data_dict:
     count = 0
     for things, values in data_dict[namen].items():
@@ -72,11 +80,13 @@ for namen in data_dict:
             count +=1
     if count >=18:
         print namen, count
-        
-### Task 2: Remove outliers - remove TOTAL, Lockhardt Eugene E (all NaNs), and The Agency in the Park    
-outlier = data_dict.pop('TOTAL')
+
 outlier = data_dict.pop('LOCKHART EUGENE E')
 outlier = data_dict.pop('THE TRAVEL AGENCY IN THE PARK')
+
+## Remove Total as Statistical outlier found abnormal hist/distribution, found upon examination as pandas dataframe
+outlier = data_dict.pop('TOTAL')                       
+
 
 ### Negative outliers found in deferred_income and restricted stock deferred
 ### Entries for 'BELFER ROBERT' & 'BHATANGAR SANJAY' corrected as confirmed by enron61702insiderpay.pdf
@@ -107,6 +117,14 @@ data_dict['BHATNAGAR SANJAY']['total_stock_value']= 15456290
 df_data = pd.DataFrame.from_dict({(i): data_dict[i]
                                   for i in data_dict.keys()},orient='index')
 
+## Outliers values with statistically high values - TOTAL discovered - removed above
+#print df_data['bonus'].describe()
+#df_data['bonus'].hist()
+#df_data['salary'].hist()
+#print df_data[df_data['bonus'] >0.8e8]
+
+num_pois = df_data[df_data['poi']==True].sum()
+print("There are %s entries classified as POIs"%(num_pois))
 ### List of Features that are numbers
 numbers = list(df_data)  
 numbers.remove('email_address') 
@@ -147,6 +165,34 @@ for col in numbers:
     imputed_median[col] = imputed_median[col].replace(np.nan, ave)
     imputed_zero[col] = imputed_zero[col].replace(np.nan, 0)
 
+## How many entries are there per Feature??    
+print ("Number of NaNs per Feature of 143 ")
+print df_data.isnull().sum(axis=0)  #https://stackoverflow.com/questions/30059260/python-pandas-counting-the-number-of-missing-nan-in-each-row
+
+## Feature values, numbers and negative values
+print ("Breakdown of Feature Value Entries:")
+
+for items in features_list:
+    value_exists = 0
+    pos_poi = 0
+    neg_poi = 0 
+    for names in data_dict:
+        if data_dict[names][items] != "NaN":
+            value_exists = value_exists + 1
+            if data_dict[names]['poi'] == 1:
+                pos_poi = pos_poi+1
+            else:    neg_poi = neg_poi+1
+    print '%25s %8d entries %8d POIs %8d non-POIs %8.1f%% POIs'%(items, value_exists, pos_poi, neg_poi,(pos_poi/value_exists)*100.0)
+
+print ("Features with Negative Values:")    
+for items in features_list:
+    neg_value = 0 
+    for names in data_dict:
+        if data_dict[names][items] != "NaN" and data_dict[names][items] <0:
+            neg_value = neg_value + 1
+    if neg_value >0:
+        print '%25s %8d'%(items, neg_value)
+        
 
 my_features = ['poi','salary', 'bonus','total_payments',  
                'exercised_stock_options','restricted_stock','total_stock_value',
@@ -154,17 +200,13 @@ my_features = ['poi','salary', 'bonus','total_payments',
                'long_term_incentive', 'other',
                'to_messages', 'shared_receipt_with_poi','from_messages',      
                'from_this_person_to_poi', 'from_poi_to_this_person',
-              # 'restricted_stock_deferred','loan_advances','director_fees',    ## Removed - too few values
+              # 'restricted_stock_deferred','loan_advances','director_fees',    ## Remove! - too few values
                'deferral_payments',                                            ## Remove? - 73% NaNs
                'take_home', 'percent_exercised', 'response_rate', 'poi_response', 'delta_response' ## New features
               ]
 
 ### Store new features and corrections to my_dataset dictionary for easy export below.
-my_dataset = df_data.to_dict(orient='index')               ## no pre-imputation, for imputation by pipeline
-
-my_data_median = imputed_median.to_dict(orient='index')    ## median manual pre-imputation
-my_data_mean = imputed_mean.to_dict(orient='index')        ## mean manual pre-imputation
-my_data_zero = imputed_zero.to_dict(orient='index')        ## zero manual pre-imputation
+my_dataset = df_data.to_dict(orient='index')               ## no pre-imputation, use imputation in estimatore pipeline
 
 
 ######################
@@ -180,35 +222,43 @@ print ("########  Feature Ranking  ########")
 ## VarianceThreshold object to rank feature variances
 thresholder = VarianceThreshold()
 high_variance = thresholder.fit(features)
-## List Features with Ranked variances (ascending)
+## List Features with Ranked variances (descending)
 t_vars = thresholder.variances_
-t_vars_sort = np.argsort(thresholder.variances_)
+#t_vars_sort = np.argsort(thresholder.variances_) ## ascending
+t_vars_sort = (-thresholder.variances_).argsort()##https://stackoverflow.com/questions/16486252/is-it-possible-to-use-argsort-in-descending-order
+
 print "########  VarianceThreshold:"
 for i in t_vars_sort:
-    print i, my_features[i+1], t_vars[i]
-    
-scaler = StandardScaler()
-features = scaler.fit_transform(features)
+    print '%23s   %10.2e'%(my_features[i+1],t_vars[i])
 
 ######################
-## KBest takes Featues, target(labels), select k features
+## SelectKBest Ranking Featues, target(labels), select k features
 kbest = SelectKBest(f_regression).fit(features, labels)
-k_scoresort = np.argsort(kbest.scores_)
-k_pvals  = kbest.pvalues_
 print "########  SelectKBest:"
-for f in k_scoresort:
-    print my_features[f+1], 'score: ', kbest.scores_[f], k_pvals[f]
-
-#####################    
-## Select Percentile, default selection function: the 10% most significant features
-selector = SelectPercentile(f_classif, percentile=10)
-selector.fit(features, labels)
-scores = -np.log10(selector.pvalues_)
-scores /= scores.max()
-print "##########  SelectPercentile:"
-for f in np.argsort(scores):
-    print my_features[f+1], 'score: ', scores[f], k_pvals[f]
+for f in (-kbest.scores_).argsort():
+    print '%23s   %8.2e %10.2e'%(my_features[f+1], kbest.scores_[f], kbest.pvalues_[f])
     
+#####################   Removed - Identical Scores to SelectKBest 
+## Select Percentile, default selection function: the 10% most significant features
+#selectp = SelectPercentile(f_classif, percentile=10)
+#selectp.fit(features, labels)
+#print "##########  SelectPercentile:"
+#for f in (-scores).argsort():
+#    print '%23s   %8.2e %10.2e'%(my_features[f+1], selectp.scores_[f], selectp.pvalues_[f])
+  
+
+#####################      
+## Feature Importance with Extra Trees Classifier
+## https://machinelearningmastery.com/feature-selection-machine-learning-python/
+model = ExtraTreesClassifier(n_estimators = 1000).fit(features,labels)
+feature_scores = model.feature_importances_
+
+names = list(my_features)
+names.pop(0)
+
+for score, fname in sorted(zip(feature_scores, names), reverse=True):
+     print '%23s   %8.3f'%(fname, score)
+
 
 ### Highly correlated features
 ## Review Features: correlation matrix pandas, boxplot, statistics
@@ -217,12 +267,18 @@ for f in np.argsort(scores):
 #print imputed_median.describe()
 #pd.DataFrame.hist(imputed_median)
 
-s= imputed_median.corr()
+s= df_data.corr()
 s_order = s.unstack().sort_values(ascending=False)
-
+dup= 0
+eliminated = ['poi','restricted_stock_deferred','loan_advances','director_fees']
 for key, value in s_order.iteritems():
+    if key[0] in eliminated or key[1] in eliminated:
+        continue
+    if dup == value:
+        continue
     if value > 0.8 and value !=1:
         print key, value
+        dup = value
 
 ### Top Features Sorted as Ranked for Median Imputation by Select KBest/Percentile
 my_features = ['poi', 'exercised_stock_options', 'total_stock_value', 
@@ -264,7 +320,6 @@ pipe_features = Pipeline([("impute",Imputer(strategy = 'median')),
 K_FEATURES_OPTIONS = [1,2,3]
 N_COMPS = [3,4,5]       
 S_FUNC = [f_regression, f_classif, chi2]
-C_OPTIONS = [25]
               
 param_grid_f = [{'features__pca__n_components': N_COMPS,
                  'features__pca__whiten': [True, False],
@@ -437,4 +492,3 @@ test_classifier(clf, my_dataset, my_features)
 
 features_list = my_features
 dump_classifier_and_data(clf, my_dataset, features_list)
-
